@@ -6,7 +6,7 @@ INPUT_PATH = "./data/"
 PROJECT = 'Trial'
 
 # indicator
-USE_PRIOR_PREPROCESS = True
+USE_PRIOR_PREPROCESS = False
 
 ''' if the use_prior_input is False '''
 # user puts the input file name down
