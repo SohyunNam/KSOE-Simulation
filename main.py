@@ -1,70 +1,54 @@
-import simpy, time, sys, json
-import pandas as pd
+import simpy, time, sys
 
-from Input import input_main
-from Preprocessing import processing_with_activity_N_bom
-from Sim_Kernel import Resource, Part, Sink, StockYard, Monitor, Process
-from Post import post_main
-
-
-def set_virtual(virtual_stock=False, virtual_shelter=False, virtual_painting=False):
-    if virtual_stock or virtual_shelter or virtual_painting:
-        virtual_list = list()
-        if virtual_stock:
-            virtual_list.append("Stock")
-        if virtual_shelter:
-            virtual_list.append("Shelter")
-        if virtual_painting:
-            virtual_list.append("Painting")
-
-        return virtual_list
-    else:
-        return None
+from network import *
+from Sim_Kernel import *
+from Preprocessing import *
+from Post import *
 
 
-def read_inout(path, virtual_list=None):
-    inout_table = pd.read_excel(path)
-    process_inout = {}
-    for i in range(len(inout_table)):
-        temp = inout_table.iloc[i]
-        process_inout[temp['LOC']] = [temp['IN'], temp['OUT']]
+def read_process_info(path):
+    process_info_data = pd.read_excel(path)
+    process_info = {}
+    inout = {}
 
-    if virtual_list is not None:
-        for virtual in virtual_list:
-            process_inout[virtual] = [virtual, virtual]
+    for i in range(len(process_info_data)):
+        temp = process_info_data.iloc[i]
+        name = temp['name']
+        process_type = temp['type']
+        if process_type not in process_info.keys():
+            process_info[process_type] = {}
+        process_info[process_type][name] = {}
+        process_info[process_type][name]['capacity'] = temp['Capacity']
+        process_info[process_type][name]['unit'] = temp['unit']
 
-    return process_inout
+        inout[name] = [temp['in'], temp['out']]
 
+    virtual_list = ['Stock', 'Shelter', 'Painting']
+    for virtual in virtual_list:
+        if virtual == "Stock":
+            process_info['Stockyard'][virtual] = {'capacity' : float('inf'), 'unit': 'm2'}
+        elif virtual == 'Shelter':
+            process_info['Shelter'][virtual] = {'capacity' : float('inf'), 'unit': 'm2'}
+        else:
+            process_info['Painting'][virtual] = {'capacity' : float('inf'), 'unit': 'm2'}
 
-def set_area(default_area, process_list, path_stock_area=None, path_process_area=None):
-    area = dict()
-    stock_list = None
+        inout[virtual]= [virtual, virtual]
 
-    if path_stock_area is not None:
-        stock_area_data = pd.read_excel(path_stock_area)
-        stock_list = list(stock_area_data['name'])
-        for i in range(len(stock_list)):
-            area[stock_area_data['name'][i]] = stock_area_data['area'][i]
-        if "Stock" in process_list:
-            stock_list.append("Stock")
-
-    if path_process_area is not None:
-        process_area_data = pd.read_excel(path_process_area)
-        proc_list = list(process_area_data['name'])
-        for i in range(len(proc_list)):
-            area[process_area_data['name'][i]] = process_area_data['area'][i]
-
-    for process in process_list:
-        if process not in area.keys():
-            area[process] = default_area
-
-    return area, stock_list
+    return process_info, inout
 
 
 def read_converting(path):
-    with open(path, 'r') as f:
-        converting_dict = json.load(f)
-
+    converting_df = pd.read_excel(path)
+    converting_dict = dict()
+    for idx in range(len(converting_df)):
+        department = converting_df.iloc[idx]['Department']
+        if department not in converting_dict.keys():
+            converting_dict[department] = converting_df.iloc[idx]['Factory']
+        else:
+            factory = converting_dict[department]
+            if type(factory) == str:
+                converting_dict[department] = [factory]
+            converting_dict[department].append(converting_df.iloc[idx]['Factory'])
     return converting_dict
 
 
@@ -75,24 +59,10 @@ def read_dock_series(path: object) -> object:
     return dock_series_mapping
 
 
-def read_network(path, padding=None):
-    from_to_matrix = pd.read_excel(path, index_col=0)
+def read_road(path_distance, path_objectid, data_path):
+    network_distance = convert_to_json_road(path_distance, path_objectid, data_path)
 
-    # basic padding -> Source, Sink
-    basic = ["Source", "Sink"]
-    if padding is not None:
-        basic += padding
-
-    # padding: process list that its distance equals 0
-    for padding_process in basic:
-        from_to_matrix[padding_process] = 0.0
-        from_to_matrix.loc[padding_process] = 0.0
-
-    network_dict = dict()
-    network_dict[12] = from_to_matrix
-
-    return network_dict
-
+    return network_distance
 
 '''
 Modeling
@@ -104,56 +74,81 @@ Modeling
 '''
 
 
-def resource_information(type, tp_numbers=None, tp_loaded=None, tp_unloaded=None, wf_numbers=None, wf_skills=None):
-    info = {}
-    if type == 'Transporter':
-        for i in range(tp_numbers):
-            info["TP_{0}".format(i + 1)] = {"v_loaded": tp_loaded, "v_unloaded": tp_unloaded}
-    return info
+def modeling_TP(path_tp):
+    tp_info = pd.read_excel(path_tp)
+    tps = dict()
+    tp_minmax = dict()
+    for i in range(len(tp_info)):
+        temp = tp_info.iloc[i]
+        yard = temp['운영구역'][0]
+        if yard in ["1", "2"]:
+            tp_name = temp['장비번호']
+            tp_name = tp_name if tp_name not in tps.keys() else '{0}_{1}'.format(tp_name, 0)
+            capacity = temp['최대 적재가능 블록중량(톤)']
+            v_loaded = temp['만차 이동 속도(km/h)'] * 24 * 1000
+            v_unloaded = temp['공차 이동 속도(km/h)'] * 24 * 1000
+            yard = int(yard)
+            tps[tp_name] = Transporter(tp_name, yard, capacity, v_loaded, v_unloaded)
+            if yard not in tp_minmax.keys():
+                tp_minmax[yard] = {"min": 1e8, "max": 0}
+
+            tp_minmax[yard]["min"] = capacity if capacity < tp_minmax[yard]["min"] else tp_minmax[yard]["min"]
+            tp_minmax[yard]["max"] = capacity if capacity > tp_minmax[yard]["max"] else tp_minmax[yard]["max"]
+
+    return tps, tp_minmax
 
 
 def modeling_parts(environment, data, process_dict, monitor_class, resource_class=None, distance_matrix=None,
-                   stock_dict=None, inout=None, convert_dict=None, dock_dict=None):
+                   stock_dict=None, inout=None, convert_dict=None, dock_dict=None, tp_minmax=None):
     part_dict = dict()
+    blocks = {'Created Part': 0}
     for part in data:
         part_data = data[part]
         series = part[:5]
+        yard = 1 if dock_dict[series] in [1, 2, 3, 4, 5] else 2
+        part_weight = part_data['weight'] if part_data['weight'] < tp_minmax[yard]['max'] else tp_minmax[yard]['max']
+        block = Block(part, part_data['area'], part_data['size'], part_weight, part_data['data'])
+        blocks[block.name] = block
         part_dict[part] = Part(part, environment, part_data['data'], process_dict, monitor_class,
-                               resource=resource_class, from_to_matrix=distance_matrix, size=part_data['size'],
-                               area=part_data['area'], child=part_data['child_block'], parent=part_data['parent_block'],
-                               stocks=stock_dict, Inout=inout, convert_to_process=convert_dict, dock=dock_dict[series])
+                               resource=resource_class, network=distance_matrix, block=block, blocks=blocks,
+                               child=part_data['child_block'], parent=part_data['parent_block'], stocks=stock_dict,
+                               Inout=inout, convert_to_process=convert_dict, dock=dock_dict[series],
+                               source_location=part_data['source_location'])
 
     return part_dict
 
 
-def modeling_processes(process_dict, stock_dict, list_for_process, list_for_stock, environment, machine_number,
-                       part_modeling_data, monitor_class, resource_class=None, convert_dict=None, area=None):
-    for factory in list_for_process:
-        if factory in list_for_stock:
-            stock_dict[factory] = StockYard(environment, factory, part_modeling_data, monitor_class,
-                                            capacity=area[factory])
-        elif (area[factory] < 1e8) and ('도장' in factory):
-            process_dict[factory] = Process(environment, factory, machine_number, process_dict, part_modeling_data,
-                                            monitor_class, resource=resource_class, convert_dict=convert_dict,
-                                            area=area[factory], process_type="Painting")
-        elif (area[factory] < 1e8) and ('도장' not in factory):
-            process_dict[factory] = Process(environment, factory, machine_number, process_dict, part_modeling_data,
-                                            monitor_class, resource=resource_class, convert_dict=convert_dict,
-                                            area=area[factory], process_type="Shelter")
-        elif factory == "Painting":
-            process_dict[factory] = Process(environment, factory, machine_number, process_dict, part_modeling_data,
-                                            monitor_class, resource=resource_class, convert_dict=convert_dict,
-                                            area=area[factory], process_type="Painting")
-        elif factory == "Shelter":
-            process_dict[factory] = Process(environment, factory, machine_number, process_dict, part_modeling_data,
-                                            monitor_class, resource=resource_class, convert_dict=convert_dict,
-                                            area=area[factory], process_type="Shelter")
-        else:
-            process_dict[factory] = Process(environment, factory, machine_number, process_dict, part_modeling_data,
-                                            monitor_class, resource=resource_class, convert_dict=convert_dict,
-                                            area=area[factory])
+def modeling_processes(process_dict, stock_dict, process_info, environment, parts, monitor_class, machine_num,
+                       resource_class, convert_process):
+    # 1. Stockyard
+    stockyard_info = process_info['Stockyard']
+    for stock in stockyard_info.keys():
+        stock_dict[stock] = StockYard(environment, stock, parts, monitor_class,
+                                      capacity=stockyard_info[stock]['capacity'], unit=stockyard_info[stock]['unit'])
+    # 2. Shelter
+    shelter_info = process_info['Shelter']
+    for shelter in shelter_info.keys():
+        process_dict[shelter] = Process(environment, shelter, machine_num, process_dict, parts, monitor,
+                                        resource=resource_class, capacity=shelter_info[shelter]['capacity'],
+                                        convert_dict=convert_process, unit=shelter_info[shelter]['unit'],
+                                        process_type="Shelter")
 
-    process_dict['Sink'] = Sink(environment, process_dict, part_modeling_data, monitor_class)
+    # 3. Painting
+    painting_info = process_info['Painting']
+    for painting in painting_info.keys():
+        process_dict[painting] = Process(environment, painting, machine_num, process_dict, parts, monitor,
+                                        resource=resource_class, capacity=painting_info[painting]['capacity'],
+                                        convert_dict=convert_process, unit=painting_info[painting]['unit'],
+                                        process_type="Painting")
+
+    # 4. Factory
+    factory_info = process_info['Factory']
+    for factory in factory_info.keys():
+        process_dict[factory] = Process(environment, factory, machine_num, process_dict, parts, monitor,
+                                        resource=resource_class, capacity=factory_info[factory]['capacity'],
+                                        convert_dict=convert_process, unit=factory_info[factory]['unit'],
+                                        process_type="Factory")
+    process_dict['Sink'] = Sink(environment, process_dict, parts, monitor_class)
 
     return process_dict, stock_dict
 
@@ -162,14 +157,14 @@ if __name__ == "__main__":
     start = time.time()
     # print(sys.argv[1])
     # 1. read input data
-    # with open('C:/Users/sohyon/PycharmProjects/Simulation_Module/data/input_data.json', 'r') as f:
-    #     input_data = json.load(f)
+    with open('./result/Trial/input_data.json', 'r') as f:
+        input_data = json.load(f)
     # with open(sys.argv[1], 'r') as f:
     #     input_data = json.load(f)
 
-    path_input_file = input_main()
-    with open(path_input_file, 'r') as f:
-        input_data = json.load(f)
+    process_info, inout = read_process_info(input_data['path_process_info'])
+    converting = read_converting(input_data['path_converting_data'])
+    dock = read_dock_series(input_data['path_dock_series_data'])
 
     # if need to preprocess with activity and bom
     if input_data['use_prior_process']:
@@ -178,33 +173,17 @@ if __name__ == "__main__":
         print("Finish data loading at ", time.time() - start)
     else:
         print("Start combining Activity and BOM data at ", time.time() - start)
-        data_path = processing_with_activity_N_bom(input_data['path_activity_data'], input_data['path_bom_data'],
-                                                   input_data['path_dock_series_data'], input_data['path_inout_data'],
-                                                   input_data['path_converting_data'], input_data['path_road_data'],
-                                                   input_data['series_to_preproc'], input_data['default_result'])
+        data_path = processing_with_activity_N_bom(input_data, dock, converting)
         print("Finish data preprocessing at ", time.time() - start)
 
         with open(data_path, 'r') as f:
             sim_data = json.load(f)
         print("Finish data loading at ", time.time() - start)
 
-    # set virtual process
-    virtual = set_virtual(virtual_stock=input_data['stock_virtual'],
-                          virtual_shelter=input_data['shelter_virtual'],
-                          virtual_painting=input_data['painting_virtual'])
+    initial_date = sim_data['simulation_initial_date']
+    block_data = sim_data['block_info']
 
-    # read entrance and exit
-    inout_dict = read_inout(input_data['path_inout_data'], virtual_list=virtual)
-    process_list = list(inout_dict.keys())
-
-    # set area of process
-    process_area, stock_list = set_area(input_data['process_area'], process_list,
-                                        path_stock_area=input_data['path_stock_area'],
-                                        path_process_area=input_data['path_process_area'])
-
-    converting = read_converting(input_data['path_converting_data'])
-    dock = read_dock_series(input_data['path_dock_series_data'])
-    network = read_network(input_data['path_road_data'], padding=virtual)
+    network_distance = read_road(input_data['path_distance'], input_data['path_road'], input_data['default_input'])
 
     # define simulation environment
     env = simpy.Environment()
@@ -214,50 +193,38 @@ if __name__ == "__main__":
     processes = dict()
 
     # 0. Monitor
-    monitor = Monitor(input_data['default_result'], input_data['project_name'], network)
+    monitor = Monitor(input_data['default_result'], input_data['project_name'], pd.to_datetime(initial_date))
 
     # 1. Resource
-    resource_info = resource_information("Transporter", input_data['tp_num'], input_data['tp_v_loaded'],
-                                         input_data['tp_v_unloaded'])
-    resource = Resource(env, processes, stock_yard, monitor, tp_info=resource_info, network=network, inout=inout_dict)
+    tps, tp_minmax = modeling_TP(input_data['path_transporter'])
+    resource = Resource(env, processes, stock_yard, monitor, tps=tps, tp_minmax=tp_minmax, network=network_distance,
+                        inout=inout)
 
     # 2. Block
-    parts = modeling_parts(env, sim_data, processes, monitor, resource_class=resource, distance_matrix=network,
-                           stock_dict=stock_yard, inout=inout_dict, convert_dict=converting, dock_dict=dock)
+    parts = modeling_parts(env, block_data, processes, monitor, resource_class=resource, distance_matrix=network_distance,
+                           stock_dict=stock_yard, inout=inout, convert_dict=converting, dock_dict=dock, tp_minmax=tp_minmax)
 
     # 3. Process and StockYard
-    processes, stock_yard = modeling_processes(processes, stock_yard, process_list, stock_list, env,
-                                               input_data['machine_num'], parts, monitor, resource_class=resource,
-                                               convert_dict=converting, area=process_area)
+    processes, stock_yard = modeling_processes(processes, stock_yard, process_info, env, parts, monitor,
+                                               input_data['machine_num'], resource, converting)
 
     start_sim = time.time()
     env.run()
     finish_sim = time.time()
 
     print("Execution time:", finish_sim - start_sim)
-    path_event_tracer, path_tp_info, path_road_info = monitor.save_information()
-
+    # path_event_tracer, path_tp_info, path_road_info = monitor.save_information()
+    path_event_tracer = monitor.save_information()
     print("number of part created = ", monitor.created)
     print("number of completed = ", monitor.completed)
 
     output_path = dict()
-    output_path['input_path'] = path_input_file
+    output_path['input_path'] = './Trial/input_data.json'
     output_path['event_tracer'] = path_event_tracer
-    output_path['tp_info'] = path_tp_info
-    output_path['road_info'] = path_road_info
+    output_path['tp_list'] = list(tps.keys())
+    # output_path['tp_info'] = path_tp_info
+    # output_path['road_info'] = path_road_info
 
-    result_path = input_data['default_result'] + 'result_path.json'
-    with open(result_path, 'w') as f:
+    with open(input_data['default_result'] + 'result_path.json', 'w') as f:
         json.dump(output_path, f)
-    print("Simulation_Finish")
-
-    post_main(result_path)
-
-    # get_result = Get_result(path_event_tracer, path_tp_info, input_data['default_result'], './data/input_data.json')
-    # get_result.tp_index()
-    # get_result.calculate_stock_occupied_area()
-    # get_result.calculate_shelter_occupied_area()
-    # get_result.calculate_painting_occupied_area()
-    # print(0)
-
-    
+    print("Finish")
