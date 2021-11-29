@@ -1,6 +1,7 @@
 import json, copy
 import pandas as pd
 import numpy as np
+from datetime import timedelta
 
 SERIES = []
 ONLY_BLOCK = []
@@ -103,6 +104,7 @@ def processing_with_activity_N_bom(input_data, dock, converting) -> object:
     preproc['simulation_initial_date'] = initial_date.strftime('%Y-%m-%d')
     preproc['simulation_finish_date'] = finish_date.strftime('%Y-%m-%d')
     block_info = {}
+    validation = dict()
     for series in target_series:
         activity_data = activity_data_all[activity_data_all['호선'] == series]
         bom_data = bom_data_all[bom_data_all['호선'] == series]
@@ -119,8 +121,6 @@ def processing_with_activity_N_bom(input_data, dock, converting) -> object:
                                       (activity_data_all['공정공종'] != 'K4A') & (activity_data_all['공정공종'] != 'K4B') & \
                                       (activity_data_all['공정공종'] != 'L4B') & (activity_data_all['공정공종'] != 'L4A') & \
                                       (activity_data_all['공정공종'] != 'LX3') & (activity_data_all['공정공종'] != 'JX3')]
-
-
 
         print("공정 골라내기 완료")
 
@@ -186,35 +186,42 @@ def processing_with_activity_N_bom(input_data, dock, converting) -> object:
         for block_code in block_list:
             if (block_code in bom_child) or (block_code in bom_parent):
                 block_info[block_code] = {}
-
+                validation[block_code] = [None for _ in range(24)]
                 block_data = block_group.get_group(block_code)
                 block_data = block_data.sort_values(by=['시작일', '종료일'], ascending=True)
                 block_data = block_data.reset_index(drop=True)
 
                 # 1. activity processing
-                previous_activity = block_data.iloc[0]
+                previous_activity = copy.deepcopy(block_data.iloc[0])
                 previous_dict = dict(previous_activity)
                 start_date = previous_dict['시작일']
                 finish_date = previous_dict['종료일']
                 work_station = previous_dict['작업부서']
+                save_start = 1e8
+                save_finish = 0
 
                 process_data = [None for _ in range(32)]
                 idx = 0
                 if len(block_data) == 1:
-                    process_data[4 * idx] = float(previous_dict['시작일'])
-                    process_time = previous_dict['종료일'] - previous_dict['시작일']
+                    start_time = copy.deepcopy(previous_dict['시작일'])
+                    finish_time = copy.deepcopy(previous_dict['종료일'])
+
+                    process_data[4 * idx] = float(start_time)
+                    process_time = finish_time - start_time
                     process_data[4 * idx + 1] = float(process_time) if process_time > 0 else 0.0
-                    # process_data[4 * idx + 2] = convert_process(previous_dict['작업부서'], block_code,
-                    #                                             converting=converting, dock_mapping=dock_mapping)
+
                     process_data[4*idx + 2] = previous_dict['작업부서']
                     process_data[4 * idx + 3] = previous_dict['공정공종']
+
                     idx += 1
                 else:
                     for j in range(1, len(block_data)):
                         post_activity = block_data.iloc[j]
                         post_dict = dict(post_activity)
                         if (post_dict['시작일'] >= start_date) and (post_dict['종료일'] <= finish_date):  # 후행이 선행에 포함
-                            previous_dict['공정공종'] = previous_dict['공정공종'] + post_dict['공정공종'][0]
+                            pre_work = copy.deepcopy(previous_dict['공정공종'])
+                            post_work = copy.deepcopy(post_dict['공정공종'])
+                            previous_dict['공정공종'] = pre_work + post_work[0]
                             post_dict = copy.deepcopy(previous_dict)
 
                         # 처음이 블록 이동이 없는 데 속하고, 이전 공정이라는 게 존재하지 않을 경우
@@ -231,26 +238,30 @@ def processing_with_activity_N_bom(input_data, dock, converting) -> object:
                             '''append_list(block_code, previous_activity['공정공종'], previous_activity['시작일'],
                                         previous_activity['종료일'],
                                         previous_activity['작업부서'], size, area)'''
-                            process_data[4 * idx] = float(previous_dict['시작일']) if float(previous_dict['시작일']) > finish_date else float(finish_date)
-                            #process_time = previous_dict['종료일'] - previous_dict['시작일']
-                            process_time = previous_dict['종료일'] - process_data[4 * idx]
+                            start_date = previous_dict['시작일'] if previous_dict['시작일'] > save_finish else finish_date + 1
+                            finish_date = previous_dict['종료일'] if previous_dict['종료일'] > start_date else start_date
+                            process_time = finish_date - start_date
+
+                            process_data[4 * idx] = float(start_date)
                             process_data[4 * idx + 1] = float(process_time) if process_time > 0 else 0.0
                             # process_data[4 * idx + 2] = convert_process(previous_dict['작업부서'], block_code,
                             #                                             converting=converting, dock_mapping=dock_mapping)
                             process_data[4 * idx + 2] = previous_dict['작업부서']
                             process_data[4 * idx + 3] = previous_dict['공정공종']
-                            idx += 1
 
-                            finish_date = previous_dict['종료일']
-                            work_station = previous_dict['작업부서']
+                            idx += 1
+                            save_start = start_date
+                            save_finish = finish_date
+
                             previous_dict = copy.deepcopy(post_dict)
 
                         else:
-                            previous_dict['종료일'] = post_dict['종료일'] if post_dict['종료일'] > previous_dict['종료일'] else \
-                            previous_dict['종료일']
+                            start_date = min(previous_dict['시작일'], post_dict['시작일'])
+                            finish_date = max(previous_dict['종료일'], post_dict['종료일'], start_date)
+                            previous_dict['시작일'] = start_date
+                            previous_dict['종료일'] = finish_date
+
                             previous_dict['공정공종'] = previous_dict['공정공종'][0] + post_dict['공정공종']
-                            if previous_dict['시작일'] < finish_date:
-                                previous_dict['시작일'] = finish_date + 1
                             previous_activity = pd.Series(previous_dict)
                             work_station = previous_dict['작업부서']
 
@@ -265,6 +276,7 @@ def processing_with_activity_N_bom(input_data, dock, converting) -> object:
                             #                                             converting=converting, dock_mapping=dock_mapping)
                             process_data[4 * idx + 2] = previous_dict['작업부서']
                             process_data[4 * idx + 3] = previous_dict['공정공종']
+
                             idx += 1
 
                 process_data[4 * idx + 2] = 'Sink'
@@ -301,26 +313,12 @@ def processing_with_activity_N_bom(input_data, dock, converting) -> object:
                         child = bom_parent_data['child code'][i]
                         if child in block_list:
                             child_list.append(child)
-                            # last_process = convert_process(list(block_group.get_group(child)['작업부서'])[-1], child,
-                            #                                converting=converting, dock_mapping=dock_mapping)
-                            # if last_process not in ['선행도장부', '선행의장부', '기장부', '의장1부', '의장2부', '의장3부',
-                            #                         '도장1부', '도장2부', '발판지원부']:
-                            #     child_weight = list(bom_group_by_child.get_group(child)['중량'])[-1]
-                            #     child_size = list(bom_group_by_child.get_group(child)['size'])[-1]
-                            #     child_last_process_weight.append([last_process, child_weight, child_size])
-
                     if len(child_list) > 0:
                         block_info[block_code]['child_block'] = child_list
                     else:
                         block_info[block_code]['child_block'] = None
                         block_list_for_source.remove(block_code)
 
-                    # if len(child_last_process_weight) > 0:
-                    #     child_last_process_weight = sorted(child_last_process_weight, key=lambda x: (x[1], x[2]))
-                    #     block_info[block_code]['source_location'] = child_last_process_weight[0][0]
-                    # if len(child_list) > 0 and len(child_last_process_weight) == 0:
-                    #     print(block_code)
-                    #     print(0)
                 else:
                     block_info[block_code]['child_block'] = None
             else:
@@ -332,7 +330,7 @@ def processing_with_activity_N_bom(input_data, dock, converting) -> object:
                 parent_block_grp = block_group.get_group(parent_code)
                 parent_block_grp = parent_block_grp.sort_values(by=['시작일', '종료일'], ascending=True)
                 parent_first_process = list(parent_block_grp['작업부서'])[0]
-                if (child_list is not None) and (parent_first_process in ['선행도장부', '선행의장부', '기장부', '의장1부', '의장2부', '의장3부', '도장1부', '도장2부', '발판지원부']):
+                if child_list is not None:
                     child_process_weight_dict = dict()
                     for child_code in child_list:
                         child_process = list(block_group.get_group(child_code)['작업부서'])
@@ -343,9 +341,6 @@ def processing_with_activity_N_bom(input_data, dock, converting) -> object:
                                                '도장2부', '발판지원부']:
                                 if i not in child_process_weight_dict.keys():
                                     child_process_weight_dict[i] = list()
-                                # converted_process = convert_process(process, child_code, converting=converting,
-                                #                                     dock_mapping=dock_mapping)
-                                #child_process_weight_dict[i].append([converted_process, child_weight])
                                 child_process_weight_dict[i].append([process, child_weight])
                     # determine its source location
                     if len(child_process_weight_dict) == 0:
@@ -355,6 +350,7 @@ def processing_with_activity_N_bom(input_data, dock, converting) -> object:
                             if child in block_info.keys():
                                 if block_info[child]['child_block'] is not None:
                                     grandchild_list += block_info[child]['child_block']
+
                         for grandchild in grandchild_list:
                             grandchild_process = list(block_group.get_group(grandchild)['작업부서'])
                             grandchild_weight = list(bom_group_by_child.get_group(grandchild)['중량'])[-1]
@@ -364,9 +360,6 @@ def processing_with_activity_N_bom(input_data, dock, converting) -> object:
                                                    '도장2부', '발판지원부']:
                                     if i not in child_process_weight_dict.keys():
                                         child_process_weight_dict[i] = list()
-                                    # converted_process = convert_process(process, grandchild, converting=converting,
-                                    #                                     dock_mapping=dock_mapping)
-                                    # child_process_weight_dict[i].append([converted_process, grandchild_weight])
                                     child_process_weight_dict[i].append([process, grandchild_weight])
 
                     if len(child_process_weight_dict) == 0:
@@ -386,10 +379,8 @@ def processing_with_activity_N_bom(input_data, dock, converting) -> object:
                         location_list = sorted(location_list, key=lambda x: x[1], reverse=True)
                         block_info[parent_code]['source_location'] = location_list[0][0]
 
-
     preproc['block_info'] = block_info
     # Save data
-    with open(input_data['default_input'] + 'Layout_data.json', 'w') as f:
+    with open(input_data['path_preprocess'], 'w') as f:
         json.dump(preproc, f)
 
-    return input_data['default_input'] + 'Layout_data.json'
