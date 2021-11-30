@@ -20,7 +20,7 @@ if not, fill the number what you want to simulate for in the list
 '''
 
 # If reuse the prior file on preprocess --> 전처리 안 할 때는 굳이 안 건드려도 됨
-PATH_PRIOR_PROCESS = "Layout_data_20180630_20191231.json"
+PATH_PRIOR_PROCESS = "Layout_data_20180630_20181231.json"
 
 # If you want to run the Preprocess.py
 PATH_ACTIVITY = "Layout_Activity.xlsx"

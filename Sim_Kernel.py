@@ -346,6 +346,8 @@ class Part:
                         previous_process = "{0}도크".format(dock_num)
                 # 1. 블록 크기로는 들어갈 수 있지만 비어있는 공장이 없는 경우와
                 # 2. 애초에 블록 크기 자체가 너무 커서 어느 공장에도 들어갈 수 없는 경우하고 나누기
+                if type(previous_process) != str:
+                    previous_process = random.choice(previous_process)
                 compared_process = self.inout[previous_process][1]
 
                 for process in process_convert_by_dict:
@@ -481,6 +483,7 @@ class Sink:
 
         next_stock = None
         shortest_path = 1e8
+
         for idx in range(len(stock_list)):
             temp_stock = self.stocks[stock_list[idx]]
             if temp_stock.capacity_unit == 'm2':

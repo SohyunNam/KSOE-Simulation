@@ -148,7 +148,7 @@ if __name__ == "__main__":
         print("Finish data loading at ", time.time() - start)
     else:
         print("Start combining Activity and BOM data at ", time.time() - start)
-        processing_with_activity_N_bom(input_data, dock, converting)
+        data_preprocess_path = processing_with_activity_N_bom(input_data, dock, converting)
 
         print("Finish data preprocessing at ", time.time() - start)
 
@@ -195,6 +195,8 @@ if __name__ == "__main__":
     output_path['input_path'] = './result/Case L/input_data.json'
     output_path['event_tracer'] = path_event_tracer
     output_path['inout'] = inout
+    output_path['path_preprocess'] = input_data['path_preprocess'] if input_data[
+        'use_prior_process'] else data_preprocess_path
 
     with open(input_data['default_result'] + 'result_path.json', 'w') as f:
         json.dump(output_path, f)

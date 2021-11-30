@@ -264,7 +264,7 @@ def post_processing(json_path):
     with open(input_data['default_input'] + 'network_edge.json', 'r') as f:
         network_road = json.load(f)
 
-    preproc_data_path = input_data['path_preprocess']
+    preproc_data_path = result_path['path_preprocess']
     with open(preproc_data_path, 'r') as f:
         preproc_data = json.load(f)
 
