@@ -3,7 +3,7 @@ import simpy, time, sys
 from network import *
 from Sim_Kernel import *
 from Preprocessing import *
-from Post import *
+from Postprocessing import *
 
 
 def read_process_info(path):
@@ -74,52 +74,27 @@ Modeling
 '''
 
 
-def modeling_TP(path_tp):
-    tp_info = pd.read_excel(path_tp)
-    tps = dict()
-    tp_minmax = dict()
-    for i in range(len(tp_info)):
-        temp = tp_info.iloc[i]
-        yard = temp['운영구역'][0]
-        if yard in ["1", "2"]:
-            tp_name = temp['장비번호']
-            tp_name = tp_name if tp_name not in tps.keys() else '{0}_{1}'.format(tp_name, 0)
-            capacity = temp['최대 적재가능 블록중량(톤)']
-            v_loaded = temp['만차 이동 속도(km/h)'] * 24 * 1000
-            v_unloaded = temp['공차 이동 속도(km/h)'] * 24 * 1000
-            yard = int(yard)
-            tps[tp_name] = Transporter(tp_name, yard, capacity, v_loaded, v_unloaded)
-            if yard not in tp_minmax.keys():
-                tp_minmax[yard] = {"min": 1e8, "max": 0}
-
-            tp_minmax[yard]["min"] = capacity if capacity < tp_minmax[yard]["min"] else tp_minmax[yard]["min"]
-            tp_minmax[yard]["max"] = capacity if capacity > tp_minmax[yard]["max"] else tp_minmax[yard]["max"]
-
-    return tps, tp_minmax
-
-
-def modeling_parts(environment, data, process_dict, monitor_class, resource_class=None, distance_matrix=None,
-                   stock_dict=None, inout=None, convert_dict=None, dock_dict=None, tp_minmax=None):
+def modeling_parts(environment, data, process_dict, monitor_class, distance_matrix=None,
+                   stock_dict=None, inout=None, convert_dict=None, dock_dict=None, lag_time=2):
     part_dict = dict()
     blocks = {'Created Part': 0}
     for part in data:
         part_data = data[part]
         series = part[:5]
         yard = 1 if dock_dict[series] in [1, 2, 3, 4, 5] else 2
-        part_weight = part_data['weight'] if part_data['weight'] < tp_minmax[yard]['max'] else tp_minmax[yard]['max']
-        block = Block(part, part_data['area'], part_data['size'], part_weight, part_data['data'])
+        block = Block(part, part_data['area'], part_data['size'], part_data['weight'], part_data['data'], yard, dock_dict[series])
         blocks[block.name] = block
         part_dict[part] = Part(part, environment, part_data['data'], process_dict, monitor_class,
-                               resource=resource_class, network=distance_matrix, block=block, blocks=blocks,
+                               resource=None, network=distance_matrix, block=block, blocks=blocks,
                                child=part_data['child_block'], parent=part_data['parent_block'], stocks=stock_dict,
                                Inout=inout, convert_to_process=convert_dict, dock=dock_dict[series],
-                               source_location=part_data['source_location'])
+                               source_location=part_data['source_location'], stock_lag=lag_time)
 
     return part_dict
 
 
 def modeling_processes(process_dict, stock_dict, process_info, environment, parts, monitor_class, machine_num,
-                       resource_class, convert_process):
+                       convert_process, network, inout, lag_time):
     # 1. Stockyard
     stockyard_info = process_info['Stockyard']
     for stock in stockyard_info.keys():
@@ -129,7 +104,7 @@ def modeling_processes(process_dict, stock_dict, process_info, environment, part
     shelter_info = process_info['Shelter']
     for shelter in shelter_info.keys():
         process_dict[shelter] = Process(environment, shelter, machine_num, process_dict, parts, monitor,
-                                        resource=resource_class, capacity=shelter_info[shelter]['capacity'],
+                                        capacity=shelter_info[shelter]['capacity'],
                                         convert_dict=convert_process, unit=shelter_info[shelter]['unit'],
                                         process_type="Shelter")
 
@@ -137,7 +112,7 @@ def modeling_processes(process_dict, stock_dict, process_info, environment, part
     painting_info = process_info['Painting']
     for painting in painting_info.keys():
         process_dict[painting] = Process(environment, painting, machine_num, process_dict, parts, monitor,
-                                        resource=resource_class, capacity=painting_info[painting]['capacity'],
+                                        capacity=painting_info[painting]['capacity'],
                                         convert_dict=convert_process, unit=painting_info[painting]['unit'],
                                         process_type="Painting")
 
@@ -145,11 +120,11 @@ def modeling_processes(process_dict, stock_dict, process_info, environment, part
     factory_info = process_info['Factory']
     for factory in factory_info.keys():
         process_dict[factory] = Process(environment, factory, machine_num, process_dict, parts, monitor,
-                                        resource=resource_class, capacity=factory_info[factory]['capacity'],
+                                        capacity=factory_info[factory]['capacity'],
                                         convert_dict=convert_process, unit=factory_info[factory]['unit'],
                                         process_type="Factory")
-    process_dict['Sink'] = Sink(environment, process_dict, parts, monitor_class)
-
+    process_dict['Sink'] = Sink(environment, process_dict, parts, monitor_class, network, stock_dict, inout,
+                                convert_process, lag_time)
     return process_dict, stock_dict
 
 
@@ -157,8 +132,8 @@ if __name__ == "__main__":
     start = time.time()
     # print(sys.argv[1])
     # 1. read input data
-    with open('./result/Trial/input_data.json', 'r') as f:
-        input_data = json.load(f)
+    with open('./result/Case L/input_data.json', 'r') as f:
+       input_data = json.load(f)
     # with open(sys.argv[1], 'r') as f:
     #     input_data = json.load(f)
 
@@ -173,10 +148,11 @@ if __name__ == "__main__":
         print("Finish data loading at ", time.time() - start)
     else:
         print("Start combining Activity and BOM data at ", time.time() - start)
-        data_path = processing_with_activity_N_bom(input_data, dock, converting)
+        processing_with_activity_N_bom(input_data, dock, converting)
+
         print("Finish data preprocessing at ", time.time() - start)
 
-        with open(data_path, 'r') as f:
+        with open(input_data['path_preprocess'], 'r') as f:
             sim_data = json.load(f)
         print("Finish data loading at ", time.time() - start)
 
@@ -192,21 +168,18 @@ if __name__ == "__main__":
     stock_yard = dict()
     processes = dict()
 
-    # 0. Monitor
+    # 1. Monitor
     monitor = Monitor(input_data['default_result'], input_data['project_name'], pd.to_datetime(initial_date))
 
-    # 1. Resource
-    tps, tp_minmax = modeling_TP(input_data['path_transporter'])
-    resource = Resource(env, processes, stock_yard, monitor, tps=tps, tp_minmax=tp_minmax, network=network_distance,
-                        inout=inout)
-
     # 2. Block
-    parts = modeling_parts(env, block_data, processes, monitor, resource_class=resource, distance_matrix=network_distance,
-                           stock_dict=stock_yard, inout=inout, convert_dict=converting, dock_dict=dock, tp_minmax=tp_minmax)
+    parts = modeling_parts(env, block_data, processes, monitor, distance_matrix=network_distance,
+                           stock_dict=stock_yard, inout=inout, convert_dict=converting, dock_dict=dock,
+                           lag_time=input_data['parameter_stock_lag_time'])
 
     # 3. Process and StockYard
     processes, stock_yard = modeling_processes(processes, stock_yard, process_info, env, parts, monitor,
-                                               input_data['machine_num'], resource, converting)
+                                               input_data['machine_num'], converting, network_distance, inout,
+                                               lag_time=input_data['parameter_stock_lag_time'])
 
     start_sim = time.time()
     env.run()
@@ -219,12 +192,11 @@ if __name__ == "__main__":
     print("number of completed = ", monitor.completed)
 
     output_path = dict()
-    output_path['input_path'] = './Trial/input_data.json'
+    output_path['input_path'] = './result/Case L/input_data.json'
     output_path['event_tracer'] = path_event_tracer
-    output_path['tp_list'] = list(tps.keys())
-    # output_path['tp_info'] = path_tp_info
-    # output_path['road_info'] = path_road_info
+    output_path['inout'] = inout
 
     with open(input_data['default_result'] + 'result_path.json', 'w') as f:
         json.dump(output_path, f)
     print("Finish")
+    post_processing(input_data['default_result'] + 'result_path.json')
