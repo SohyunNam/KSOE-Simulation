@@ -280,9 +280,9 @@ class Part:
             if if_to_be_capacity > 0:
                 if next_stock is None:  # No stock to compare
                     next_stock = stock_list[idx]
-                    shortest_path = self.network_distance[next_process][self.inout[stock_list[idx]][0]]
+                    shortest_path = self.network_distance[self.inout["{0}도크".format(self.dock)][1]][self.inout[stock_list[idx]][0]]
                 else:
-                    compared_path = self.network_distance[next_process][self.inout[stock_list[idx]][0]]
+                    compared_path = self.network_distance[self.inout["{0}도크".format(self.dock)][1]][self.inout[stock_list[idx]][0]]
                     if shortest_path > compared_path:  # replaced
                         next_stock = stock_list[idx]
                         shortest_path = compared_path
@@ -348,7 +348,7 @@ class Part:
                 # 2. 애초에 블록 크기 자체가 너무 커서 어느 공장에도 들어갈 수 없는 경우하고 나누기
                 if type(previous_process) != str:
                     previous_process = random.choice(previous_process)
-                compared_process = self.inout[previous_process][1]
+                compared_process = self.inout["{0}도크".format(self.dock)][1]
 
                 for process in process_convert_by_dict:
                     process_temp = self.inout[process][0]
@@ -409,7 +409,8 @@ class Sink:
     def put(self, part):
         if self.parts[part.name].parent is not None:  # 상위 블록이 있는 경우
             parent_block = self.parts[part.name].parent
-
+            if part.name == "A0030_E41P2":
+                print(0)
             child_last_work = part.data[(part.step, 'work')]
             tp_flag = False
             if ('F' in child_last_work) or ('G' in child_last_work) or ('H' in child_last_work) or (
@@ -426,6 +427,7 @@ class Sink:
             erected_residual_time = parent_start_time - self.env.now
             if erected_residual_time >= self.stock_lag:  # Parent Block 시작까지 2일 이상 남음 --> Child는 적치장에 있다가 합침
                 standard_process = part.location if type(self.converting[parent_first_process]) != str else parent_first_process
+
                 if standard_process in self.converting.keys():
                     standard_process = self.converting[standard_process]
                 next_stock = self._find_stock(standard_process, part)  # 이 때 적치장은 현재 있는 데서 가까운 데로
@@ -497,9 +499,9 @@ class Sink:
             if if_to_be_capacity > 0:
                 if next_stock is None:  # No stock to compare
                     next_stock = stock_list[idx]
-                    shortest_path = self.network[self.inout[process][1]][self.inout[stock_list[idx]][0]]
+                    shortest_path = self.network[self.inout["{0}도크".format(part.dock)][1]][self.inout[stock_list[idx]][0]]
                 else:
-                    compared_path = self.network[self.inout[process][1]][self.inout[stock_list[idx]][0]]
+                    compared_path = self.network[self.inout["{0}도크".format(part.dock)][1]][self.inout[stock_list[idx]][0]]
                     if shortest_path > compared_path:  # replaced
                         next_stock = stock_list[idx]
                         shortest_path = compared_path
@@ -575,7 +577,8 @@ class Process:
                     process_time=self.process_time[i], priority=self.priority[i],
                     waiting=self.waiting_machine, monitor=monitor, MTTF=self.MTTF[i], MTTR=self.MTTR[i],
                     initial_broken_delay=self.initial_broken_delay[i],
-                    workforce=self.workforce[i], stock_lag=stock_lag) for i in range(self.machine_num)]
+                    workforce=self.workforce[i], stock_lag=stock_lag, convert_dict=convert_dict) for i in
+            range(self.machine_num)]
         # resource
         self.tp_store = dict()
 
@@ -626,7 +629,7 @@ class Process:
 
 class Machine:
     def __init__(self, env, name, process_name, parts, processes, resource, process_time, priority, waiting, monitor,
-                 MTTF, MTTR, initial_broken_delay, workforce, stock_lag):
+                 MTTF, MTTR, initial_broken_delay, workforce, stock_lag, convert_dict):
         # input data
         self.env = env
         self.name = name
@@ -643,6 +646,7 @@ class Machine:
         self.initial_broken_delay = initial_broken_delay
         self.workforce = workforce
         self.stock_lag = stock_lag
+        self.convert_dict = convert_dict
 
         # variable defined in class
         self.machine = simpy.Store(env)
@@ -755,8 +759,20 @@ class Machine:
             elif part.data[(part.step + 1, 'process')] == 'Sink':
                 if self.parts[part.name].parent is not None:
                     parent_block = self.parts[part.name].parent
+                    parent_first_process = self.parts[parent_block].data[(0, 'process')]
+                    parent_first_process_converted = None
+                    if (parent_first_process not in self.convert_dict.keys()) and (
+                            parent_first_process not in ['도장1부', '도장2부', '발판지원부']):
+                        parent_first_process_converted = parent_first_process
+                    elif self.convert_dict[parent_first_process] == 'Dock':
+                        parent_first_process_converted = "{0}도크".format(self.parts[parent_block].dock)
+                    elif type(self.convert_dict[parent_first_process]) == str:
+                        parent_first_process_converted = self.convert_dict[parent_first_process]
+
                     residual_time = self.parts[parent_block].data[(0, 'start_time')] - self.env.now
-                    if (residual_time < self.stock_lag) and (residual_time > 0):
+                    if (self.process_name == parent_first_process_converted) and (residual_time > 0):
+                        yield self.env.timeout(residual_time)
+                    elif (residual_time < self.stock_lag) and (residual_time > 0):
                         yield self.env.timeout(residual_time)
 
             # transfer to 'to_process' function
