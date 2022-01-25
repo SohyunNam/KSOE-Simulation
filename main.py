@@ -54,7 +54,7 @@ def read_converting(path):
 
 def read_dock_series(path: object) -> object:
     data = pd.read_excel(path)
-    dock_series_mapping = {data.iloc[i]['호선']: data.iloc[i]['도크'] for i in range(len(data))}
+    dock_series_mapping = {str(data.iloc[i]['호선']): data.iloc[i]['도크'] for i in range(len(data))}
 
     return dock_series_mapping
 
@@ -80,15 +80,18 @@ def modeling_parts(environment, data, process_dict, monitor_class, distance_matr
     blocks = {'Created Part': 0}
     for part in data:
         part_data = data[part]
-        series = part[:5]
-        yard = 1 if dock_dict[series] in [1, 2, 3, 4, 5] else 2
-        block = Block(part, part_data['area'], part_data['size'], part_data['weight'], part_data['data'], yard, dock_dict[series])
-        blocks[block.name] = block
-        part_dict[part] = Part(part, environment, part_data['data'], process_dict, monitor_class,
-                               resource=None, network=distance_matrix, block=block, blocks=blocks,
-                               child=part_data['child_block'], parent=part_data['parent_block'], stocks=stock_dict,
-                               Inout=inout, convert_to_process=convert_dict, dock=dock_dict[series],
-                               source_location=part_data['source_location'], stock_lag=lag_time)
+        temp_part = part.split("_")
+        series = temp_part[0]
+        if (series in dock_dict.keys()) and (dock_dict[series] in [1, 2, 3, 4, 5, 8, 9]):
+            yard = 1 if dock_dict[series] in [1, 2, 3, 4, 5] else 2
+            block = Block(part, part_data['area'], part_data['size'], part_data['weight'], part_data['data'], yard,
+                          dock_dict[series], child=part_data['child_block'])
+            blocks[block.name] = block
+            part_dict[part] = Part(part, environment, part_data['data'], process_dict, monitor_class,
+                                   resource=None, network=distance_matrix, block=block, blocks=blocks,
+                                   child=part_data['child_block'], parent=part_data['parent_block'], stocks=stock_dict,
+                                   Inout=inout, convert_to_process=convert_dict, dock=dock_dict[series],
+                                   stock_lag=lag_time, weight=part_data['weight'])
 
     return part_dict
 
